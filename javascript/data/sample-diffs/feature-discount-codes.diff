@@ -1,0 +1,207 @@
+diff --git a/src/orderService.ts b/src/orderService.ts
+index 7c1b4a2..e9f3d1c 100644
+--- a/src/orderService.ts
++++ b/src/orderService.ts
+@@ -1,12 +1,15 @@
+ import { z } from 'zod';
+ import { query, getClient } from './db';
+ import { AppError } from './errors';
+ import { logger } from './logger';
+
+ export const createOrderSchema = z.object({
+   customerId: z.string().uuid(),
+   items: z
+     .array(
+       z.object({
+         productId: z.string().uuid(),
+         quantity: z.number().int().min(1),
+       }),
+     )
+     .min(1, 'Order must contain at least one item'),
++  discountCode: z.string().trim().toUpperCase().optional(),
+ });
+
+ export type CreateOrderInput = z.infer<typeof createOrderSchema>;
+@@ -22,6 +25,13 @@ export interface OrderItem {
+   unitPriceCents: number;
+ }
+
++export interface DiscountCode {
++  id: string;
++  code: string;
++  type: 'percentage' | 'fixed_cents';
++  value: number;
++  maxUses: number;
++  usedCount: number;
++  expiresAt: Date | null;
++}
++
+ export interface Order {
+   id: string;
+   customerId: string;
+@@ -29,6 +39,7 @@ export interface Order {
+   totalCents: number;
+   status: 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+   createdAt: Date;
++  discountCents: number;
++  discountCodeId: string | null;
+ }
+
+ /**
+@@ -36,7 +47,8 @@ export interface Order {
+  * Looks up current prices from the products table, calculates total,
+  * and inserts the order and its line items atomically.
+  */
+-export async function createOrder(input: CreateOrderInput): Promise<Order> {
++export async function createOrder(input: CreateOrderInput): Promise<Order> {
++  const discountCode = input.discountCode ? await resolveDiscountCode(input.discountCode) : null;
+   const client = await getClient();
+
+   try {
+@@ -68,18 +80,33 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
+     const totalCents = orderItems.reduce(
+       (sum, item) => sum + item.unitPriceCents * item.quantity,
+       0,
+     );
+
+-    const { rows: [order] } = await client.query<{ id: string; created_at: Date }>(
+-      `INSERT INTO orders (customer_id, total_cents, status)
+-       VALUES ($1, $2, 'pending')
+-       RETURNING id, created_at`,
+-      [input.customerId, totalCents],
+-    );
++    const discountCents = discountCode ? applyDiscount(discountCode, totalCents) : 0;
++    const chargedCents = totalCents - discountCents;
++
++    const { rows: [order] } = await client.query<{ id: string; created_at: Date }>(
++      `INSERT INTO orders (customer_id, total_cents, discount_cents, discount_code_id, status)
++       VALUES ($1, $2, $3, $4, 'pending')
++       RETURNING id, created_at`,
++      [input.customerId, chargedCents, discountCents, discountCode?.id ?? null],
++    );
+
+     for (const item of orderItems) {
+       await client.query(
+         `INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents)
+          VALUES ($1, $2, $3, $4)`,
+         [order.id, item.productId, item.quantity, item.unitPriceCents],
+       );
+     }
+
++    // Increment usage count for the discount code inside the same transaction
++    if (discountCode) {
++      await client.query(
++        'UPDATE discount_codes SET used_count = used_count + 1 WHERE id = $1',
++        [discountCode.id],
++      );
++    }
++
+     await client.query('COMMIT');
+
+     logger.info({ orderId: order.id, customerId: input.customerId, totalCents }, 'Order created');
+@@ -88,7 +115,8 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
+     return {
+       id: order.id,
+       customerId: input.customerId,
+       items: orderItems,
+-      totalCents,
++      totalCents: chargedCents,
++      discountCents,
++      discountCodeId: discountCode?.id ?? null,
+       status: 'pending',
+       createdAt: order.created_at,
+     };
+@@ -101,6 +129,52 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
+   }
+ }
+
++/**
++ * Looks up a discount code by its code string, validates it is still usable,
++ * and returns the DiscountCode record.
++ */
++async function resolveDiscountCode(code: string): Promise<DiscountCode> {
++  const { rows } = await query<DiscountCode>(
++    `SELECT id, code, type, value, max_uses AS "maxUses", used_count AS "usedCount", expires_at AS "expiresAt"
++     FROM discount_codes
++     WHERE code = $1`,
++    [code],
++  );
++
++  if (rows.length === 0) {
++    throw new AppError('DISCOUNT_CODE_NOT_FOUND', 404, `Discount code '${code}' not found`);
++  }
++
++  const dc = rows[0];
++
++  if (dc.expiresAt !== null && dc.expiresAt < new Date()) {
++    throw new AppError('DISCOUNT_CODE_EXPIRED', 400, 'This discount code has expired');
++  }
++
++  if (dc.usedCount >= dc.maxUses) {
++    throw new AppError('DISCOUNT_CODE_EXHAUSTED', 400, 'This discount code has reached its usage limit');
++  }
++
++  return dc;
++}
++
++/**
++ * Calculates the discount amount in cents given a discount code and order subtotal.
++ * Returns the number of cents to subtract (never more than the order total).
++ */
++function applyDiscount(discountCode: DiscountCode, subtotalCents: number): number {
++  let discountCents: number;
++
++  if (discountCode.type === 'percentage') {
++    discountCents = Math.round((subtotalCents * discountCode.value) / 100);
++  } else {
++    discountCents = discountCode.value;
++  }
++
++  // Never discount below zero
++  return Math.min(discountCents, subtotalCents);
++}
++
+diff --git a/src/routes/orders.ts b/src/routes/orders.ts
+new file mode 100644
+index 0000000..4a72f3d
+--- /dev/null
++++ b/src/routes/orders.ts
+@@ -0,0 +1,40 @@
++import { Router, Request, Response, NextFunction } from 'express';
++import { requireAuth } from '../authMiddleware';
++import { AuthenticatedRequest } from '../authMiddleware';
++import { createOrder, createOrderSchema } from '../orderService';
++import { AppError } from '../errors';
++
++const router = Router();
++
++/**
++ * POST /orders
++ * Creates a new order for the authenticated customer.
++ * Optionally accepts a discountCode in the request body.
++ */
++router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const parsed = createOrderSchema.safeParse({
++      ...req.body,
++      customerId: (req as AuthenticatedRequest).user?.id,
++    });
++
++    if (!parsed.success) {
++      const details = parsed.error.errors.map((e) => ({
++        field: e.path.join('.'),
++        issue: e.message,
++      }));
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid request body'));
++      return;
++    }
++
++    const order = await createOrder(parsed.data);
++
++    res.status(201).json({ data: order });
++  } catch (err) {
++    next(err);
++  }
++});
++
++export default router;

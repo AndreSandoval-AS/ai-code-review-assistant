@@ -1,0 +1,55 @@
+diff --git a/src/authMiddleware.ts b/src/authMiddleware.ts
+index 3a9f2c1..b7d04e8 100644
+--- a/src/authMiddleware.ts
++++ b/src/authMiddleware.ts
+@@ -1,6 +1,7 @@
+ import { Request, Response, NextFunction } from 'express';
+ import jwt from 'jsonwebtoken';
+ import { AppError } from './errors';
++import { logger } from './logger';
+
+ export interface AuthenticatedRequest extends Request {
+   user?: {
+@@ -30,12 +31,29 @@ export function requireAuth(
+     return;
+   }
+
+   const token = authHeader.slice(7);
+
+   try {
+     const payload = jwt.verify(token, JWT_SECRET) as AuthenticatedRequest['user'];
++
++    // Explicitly verify the exp claim is present and has not passed,
++    // because older versions of jsonwebtoken may not reject missing exp.
++    const decoded = jwt.decode(token) as { exp?: number } | null;
++    if (!decoded || typeof decoded.exp !== 'number') {
++      logger.warn({ path: req.path }, 'JWT missing exp claim — rejecting');
++      next(new AppError('UNAUTHORIZED', 401, 'Unauthorized'));
++      return;
++    }
++
++    const nowSeconds = Math.floor(Date.now() / 1000);
++    if (decoded.exp <= nowSeconds) {
++      logger.warn({ path: req.path, expiredAt: decoded.exp }, 'JWT expired — rejecting');
++      next(new AppError('UNAUTHORIZED', 401, 'Unauthorized'));
++      return;
++    }
++
+     req.user = payload;
+     next();
+   } catch (err) {
+-    // Do not distinguish between expired, malformed, or invalid-signature tokens.
+-    next(new AppError('UNAUTHORIZED', 401, 'Unauthorized'));
++    // Log the error type internally (not exposed to client) to aid debugging.
++    logger.warn({ err, path: req.path }, 'JWT verification failed');
++    next(new AppError('UNAUTHORIZED', 401, 'Unauthorized'));
+   }
+ }
+
+@@ -47,6 +65,6 @@ export function requireAdmin(
+   if (req.user?.role !== 'admin') {
+     next(new AppError('FORBIDDEN', 403, 'Forbidden'));
+     return;
+   }
+   next();
+ }

@@ -1,0 +1,1557 @@
+diff --git a/src/routes/products.ts b/src/routes/products.ts
+new file mode 100644
+index 0000000..aabbcc1
+--- /dev/null
++++ b/src/routes/products.ts
+@@ -0,0 +1,80 @@
++import { Router, Request, Response, NextFunction } from 'express';
++import { requireAuth, requireAdmin } from '../authMiddleware';
++import { listProducts, getProduct, createProduct, updateProduct, deleteProduct } from '../productService';
++import { AppError } from '../errors';
++
++const router = Router();
++
++router.get('/', async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const result = await listProducts(req.query);
++    res.json(result);
++  } catch (err) { next(err); }
++});
++
++router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const product = await getProduct(req.params.id);
++    res.json({ data: product });
++  } catch (err) { next(err); }
++});
++
++router.post('/', requireAuth, requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const product = await createProduct(req.body);
++    res.status(201).json({ data: product });
++  } catch (err) { next(err); }
++});
++
++router.put('/:id', requireAuth, requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const product = await updateProduct(req.params.id, req.body);
++    res.json({ data: product });
++  } catch (err) { next(err); }
++});
++
++router.delete('/:id', requireAuth, requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    await deleteProduct(req.params.id);
++    res.status(204).send();
++  } catch (err) { next(err); }
++});
++
++export default router;
+
+diff --git a/src/productService.ts b/src/productService.ts
+new file mode 100644
+index 0000000..bb12345
+--- /dev/null
++++ b/src/productService.ts
+
+diff --git a/src/inventoryService.ts b/src/inventoryService.ts
+new file mode 100644
+index 0000000..cc56789
+--- /dev/null
++++ b/src/inventoryService.ts
+
+diff --git a/src/routes/inventory.ts b/src/routes/inventory.ts
+new file mode 100644
+index 0000000..dd78901
+--- /dev/null
++++ b/src/routes/inventory.ts
+@@ -0,0 +1,879 @@
++import { z } from 'zod';
++import { query } from './db';
++import { AppError } from './errors';
++import { logger } from './logger';
++
++export const createProductSchema = z.object({
++  name: z.string().min(1).max(200),
++  priceCents: z.number().int().positive(),
++  category: z.string().min(1),
++  description: z.string().optional(),
++  sku: z.string().min(1).max(50),
++  stockQuantity: z.number().int().min(0).default(0),
++}).strict();
++
++export const updateProductSchema = createProductSchema.partial();
++
++export type CreateProductInput = z.infer<typeof createProductSchema>;
++export type UpdateProductInput = z.infer<typeof updateProductSchema>;
++
++export interface Product {
++  id: string;
++  name: string;
++  priceCents: number;
++  category: string;
++  description: string | null;
++  sku: string;
++  stockQuantity: number;
++  createdAt: Date;
++  updatedAt: Date;
++}
++
++export async function listProducts(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  const page = parseInt(String(queryParams.page ?? '1'), 10);
++  const limit = Math.min(parseInt(String(queryParams.limit ?? '20'), 10), 100);
++  const offset = (page - 1) * limit;
++  const category = queryParams.category ? String(queryParams.category) : null;
++
++  const params: unknown[] = [limit, offset];
++  const where = category ? `WHERE category = $3` : '';
++  if (category) params.push(category);
++
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products ${where} ORDER BY name LIMIT $1 OFFSET $2`,
++    params,
++  );
++
++  const countResult = await query<{ count: string }>(
++    `SELECT COUNT(*) AS count FROM products ${where}`,
++    category ? [category] : [],
++  );
++
++  return {
++    data: rows,
++    meta: { page, limit, total: parseInt(countResult.rows[0].count, 10) },
++  };
++}
++
++export async function getProduct(id: string): Promise<Product> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE id = $1`,
++    [id],
++  );
++  if (rows.length === 0) {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return rows[0];
++}
++
++export async function createProduct(body: unknown): Promise<Product> {
++  const parsed = createProductSchema.safeParse(body);
++  if (!parsed.success) {
++    throw new AppError('VALIDATION_ERROR', 400, 'Invalid product data');
++  }
++  const d = parsed.data;
++  const { rows } = await query<Product>(
++    `INSERT INTO products (name, price_cents, category, description, sku, stock_quantity)
++     VALUES ($1, $2, $3, $4, $5, $6)
++     RETURNING id, name, price_cents AS "priceCents", category, description, sku,
++             stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"`,
++    [d.name, d.priceCents, d.category, d.description ?? null, d.sku, d.stockQuantity],
++  );
++  logger.info({ productId: rows[0].id }, 'Product created');
++  return rows[0];
++}
++
++export async function updateProduct(id: string, body: unknown): Promise<Product> {
++  const parsed = updateProductSchema.safeParse(body);
++  if (!parsed.success) {
++    throw new AppError('VALIDATION_ERROR', 400, 'Invalid product update data');
++  }
++  const d = parsed.data;
++  const setClauses: string[] = [];
++  const params: unknown[] = [];
++  if (d.name !== undefined) { params.push(d.name); setClauses.push(`name = $${params.length}`); }
++  if (d.priceCents !== undefined) { params.push(d.priceCents); setClauses.push(`price_cents = $${params.length}`); }
++  if (d.category !== undefined) { params.push(d.category); setClauses.push(`category = $${params.length}`); }
++  if (d.description !== undefined) { params.push(d.description); setClauses.push(`description = $${params.length}`); }
++  if (d.sku !== undefined) { params.push(d.sku); setClauses.push(`sku = $${params.length}`); }
++  if (d.stockQuantity !== undefined) { params.push(d.stockQuantity); setClauses.push(`stock_quantity = $${params.length}`); }
++  if (setClauses.length === 0) {
++    return getProduct(id);
++  }
++  params.push(id);
++  const { rows } = await query<Product>(
++    `UPDATE products SET ${setClauses.join(', ')}, updated_at = NOW()
++     WHERE id = $${params.length}
++     RETURNING id, name, price_cents AS "priceCents", category, description, sku,
++             stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"`,
++    params,
++  );
++  if (rows.length === 0) {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  logger.info({ productId: id }, 'Product updated');
++  return rows[0];
++}
++
++export async function deleteProduct(id: string): Promise<void> {
++  const { rowCount } = await query(
++    'DELETE FROM products WHERE id = $1',
++    [id],
++  );
++  if (!rowCount || rowCount === 0) {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  logger.info({ productId: id }, 'Product deleted');
++}
++
++/** List AllSeason tires with optional filters. */
++export async function listAllSeasonTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'all-season' });
++}
++
++/** Get a single AllSeason tire by ID, throwing 404 if it does not belong to the 'all-season' category. */
++export async function getAllSeasonTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'all-season') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count AllSeason tires in stock. */
++export async function countAllSeasonInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['all-season'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced AllSeason tire. */
++export async function cheapestAllSeasonTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['all-season'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive AllSeason tire. */
++export async function mostExpensiveAllSeasonTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['all-season'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific AllSeason tire SKU exists. */
++export async function allSeasonSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['all-season', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List WinterTire tires with optional filters. */
++export async function listWinterTireTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'winter' });
++}
++
++/** Get a single WinterTire tire by ID, throwing 404 if it does not belong to the 'winter' category. */
++export async function getWinterTireTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'winter') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count WinterTire tires in stock. */
++export async function countWinterTireInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['winter'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced WinterTire tire. */
++export async function cheapestWinterTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['winter'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive WinterTire tire. */
++export async function mostExpensiveWinterTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['winter'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific WinterTire tire SKU exists. */
++export async function winterTireSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['winter', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List SummerTire tires with optional filters. */
++export async function listSummerTireTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'summer' });
++}
++
++/** Get a single SummerTire tire by ID, throwing 404 if it does not belong to the 'summer' category. */
++export async function getSummerTireTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'summer') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count SummerTire tires in stock. */
++export async function countSummerTireInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['summer'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced SummerTire tire. */
++export async function cheapestSummerTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['summer'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive SummerTire tire. */
++export async function mostExpensiveSummerTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['summer'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific SummerTire tire SKU exists. */
++export async function summerTireSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['summer', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List PerformanceTire tires with optional filters. */
++export async function listPerformanceTireTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'performance' });
++}
++
++/** Get a single PerformanceTire tire by ID, throwing 404 if it does not belong to the 'performance' category. */
++export async function getPerformanceTireTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'performance') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count PerformanceTire tires in stock. */
++export async function countPerformanceTireInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['performance'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced PerformanceTire tire. */
++export async function cheapestPerformanceTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['performance'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive PerformanceTire tire. */
++export async function mostExpensivePerformanceTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['performance'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific PerformanceTire tire SKU exists. */
++export async function performanceTireSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['performance', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List TruckTire tires with optional filters. */
++export async function listTruckTireTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'truck' });
++}
++
++/** Get a single TruckTire tire by ID, throwing 404 if it does not belong to the 'truck' category. */
++export async function getTruckTireTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'truck') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count TruckTire tires in stock. */
++export async function countTruckTireInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['truck'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced TruckTire tire. */
++export async function cheapestTruckTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['truck'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive TruckTire tire. */
++export async function mostExpensiveTruckTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['truck'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific TruckTire tire SKU exists. */
++export async function truckTireSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['truck', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List SUVTire tires with optional filters. */
++export async function listSUVTireTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'suv' });
++}
++
++/** Get a single SUVTire tire by ID, throwing 404 if it does not belong to the 'suv' category. */
++export async function getSUVTireTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'suv') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count SUVTire tires in stock. */
++export async function countSUVTireInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['suv'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced SUVTire tire. */
++export async function cheapestSUVTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['suv'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive SUVTire tire. */
++export async function mostExpensiveSUVTireTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['suv'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific SUVTire tire SKU exists. */
++export async function sUVTireSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['suv', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List RunFlat tires with optional filters. */
++export async function listRunFlatTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'run-flat' });
++}
++
++/** Get a single RunFlat tire by ID, throwing 404 if it does not belong to the 'run-flat' category. */
++export async function getRunFlatTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'run-flat') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count RunFlat tires in stock. */
++export async function countRunFlatInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['run-flat'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced RunFlat tire. */
++export async function cheapestRunFlatTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['run-flat'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive RunFlat tire. */
++export async function mostExpensiveRunFlatTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['run-flat'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific RunFlat tire SKU exists. */
++export async function runFlatSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['run-flat', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List OffRoad tires with optional filters. */
++export async function listOffRoadTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'off-road' });
++}
++
++/** Get a single OffRoad tire by ID, throwing 404 if it does not belong to the 'off-road' category. */
++export async function getOffRoadTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'off-road') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count OffRoad tires in stock. */
++export async function countOffRoadInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['off-road'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced OffRoad tire. */
++export async function cheapestOffRoadTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['off-road'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive OffRoad tire. */
++export async function mostExpensiveOffRoadTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['off-road'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific OffRoad tire SKU exists. */
++export async function offRoadSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['off-road', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List Touring tires with optional filters. */
++export async function listTouringTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'touring' });
++}
++
++/** Get a single Touring tire by ID, throwing 404 if it does not belong to the 'touring' category. */
++export async function getTouringTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'touring') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count Touring tires in stock. */
++export async function countTouringInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['touring'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced Touring tire. */
++export async function cheapestTouringTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['touring'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive Touring tire. */
++export async function mostExpensiveTouringTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['touring'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific Touring tire SKU exists. */
++export async function touringSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['touring', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++/** List Studded tires with optional filters. */
++export async function listStuddedTires(queryParams: Record<string, unknown>): Promise<{ data: Product[]; meta: object }> {
++  return listProducts({ ...queryParams, category: 'studded' });
++}
++
++/** Get a single Studded tire by ID, throwing 404 if it does not belong to the 'studded' category. */
++export async function getStuddedTire(id: string): Promise<Product> {
++  const product = await getProduct(id);
++  if (product.category !== 'studded') {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${id} not found`);
++  }
++  return product;
++}
++
++/** Count Studded tires in stock. */
++export async function countStuddedInStock(): Promise<number> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND stock_quantity > 0',
++    ['studded'],
++  );
++  return parseInt(rows[0].count, 10);
++}
++
++/** Get the lowest-priced Studded tire. */
++export async function cheapestStuddedTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1 AND stock_quantity > 0
++     ORDER BY price_cents ASC LIMIT 1`,
++    ['studded'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Get the most expensive Studded tire. */
++export async function mostExpensiveStuddedTire(): Promise<Product | null> {
++  const { rows } = await query<Product>(
++    `SELECT id, name, price_cents AS "priceCents", category, description, sku,
++            stock_quantity AS "stockQuantity", created_at AS "createdAt", updated_at AS "updatedAt"
++     FROM products WHERE category = $1
++     ORDER BY price_cents DESC LIMIT 1`,
++    ['studded'],
++  );
++  return rows.length > 0 ? rows[0] : null;
++}
++
++/** Check if a specific Studded tire SKU exists. */
++export async function studdedSkuExists(sku: string): Promise<boolean> {
++  const { rows } = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM products WHERE category = $1 AND sku = $2',
++    ['studded', sku],
++  );
++  return parseInt(rows[0].count, 10) > 0;
++}
++
++// ============================================================
++// Cart Service — manages the shopping cart for a customer
++// ============================================================
++
++export interface CartItem {
++  id: string;
++  customerId: string;
++  productId: string;
++  quantity: number;
++  addedAt: Date;
++  product?: Product;
++}
++
++export async function getCart(customerId: string): Promise<CartItem[]> {
++  const { rows } = await query<CartItem>(
++    `SELECT ci.id, ci.customer_id AS "customerId", ci.product_id AS "productId",
++            ci.quantity, ci.added_at AS "addedAt",
++            p.name AS "productName", p.price_cents AS "priceCents"
++     FROM cart_items ci
++     JOIN products p ON p.id = ci.product_id
++     WHERE ci.customer_id = $1
++     ORDER BY ci.added_at ASC`,
++    [customerId],
++  );
++  return rows;
++}
++
++export async function addToCart(customerId: string, productId: string, quantity: number): Promise<CartItem> {
++  // Verify product exists
++  await getProduct(productId);
++
++  // Upsert: if item already in cart, increase quantity
++  const { rows } = await query<CartItem>(
++    `INSERT INTO cart_items (customer_id, product_id, quantity)
++     VALUES ($1, $2, $3)
++     ON CONFLICT (customer_id, product_id)
++     DO UPDATE SET quantity = cart_items.quantity + EXCLUDED.quantity,
++                   updated_at = NOW()
++     RETURNING id, customer_id AS "customerId", product_id AS "productId",
++             quantity, added_at AS "addedAt"`,
++    [customerId, productId, quantity],
++  );
++  logger.info({ customerId, productId, quantity }, 'Item added to cart');
++  return rows[0];
++}
++
++export async function updateCartItem(customerId: string, cartItemId: string, quantity: number): Promise<CartItem> {
++  if (quantity <= 0) {
++    return removeFromCart(customerId, cartItemId);
++  }
++  const { rows } = await query<CartItem>(
++    `UPDATE cart_items SET quantity = $1, updated_at = NOW()
++     WHERE id = $2 AND customer_id = $3
++     RETURNING id, customer_id AS "customerId", product_id AS "productId",
++             quantity, added_at AS "addedAt"`,
++    [quantity, cartItemId, customerId],
++  );
++  if (rows.length === 0) {
++    throw new AppError('CART_ITEM_NOT_FOUND', 404, `Cart item ${cartItemId} not found`);
++  }
++  return rows[0];
++}
++
++export async function removeFromCart(customerId: string, cartItemId: string): Promise<CartItem> {
++  const { rows } = await query<CartItem>(
++    `DELETE FROM cart_items WHERE id = $1 AND customer_id = $2
++     RETURNING id, customer_id AS "customerId", product_id AS "productId",
++             quantity, added_at AS "addedAt"`,
++    [cartItemId, customerId],
++  );
++  if (rows.length === 0) {
++    throw new AppError('CART_ITEM_NOT_FOUND', 404, `Cart item ${cartItemId} not found`);
++  }
++  logger.info({ customerId, cartItemId }, 'Item removed from cart');
++  return rows[0];
++}
++
++export async function clearCart(customerId: string): Promise<void> {
++  await query('DELETE FROM cart_items WHERE customer_id = $1', [customerId]);
++  logger.info({ customerId }, 'Cart cleared');
++}
++
++export async function cartTotal(customerId: string): Promise<number> {
++  const { rows } = await query<{ total: string }>(
++    `SELECT COALESCE(SUM(ci.quantity * p.price_cents), 0) AS total
++     FROM cart_items ci
++     JOIN products p ON p.id = ci.product_id
++     WHERE ci.customer_id = $1`,
++    [customerId],
++  );
++  return parseInt(rows[0].total, 10);
++}
++
++// ============================================================
++// Order query helpers
++// ============================================================
++
++export interface OrderSummary {
++  id: string;
++  customerId: string;
++  totalCents: number;
++  discountCents: number;
++  status: string;
++  itemCount: number;
++  createdAt: Date;
++}
++
++export async function getOrdersByCustomer(customerId: string, page = 1, limit = 20): Promise<{ data: OrderSummary[]; meta: object }> {
++  const offset = (page - 1) * limit;
++  const { rows } = await query<OrderSummary>(
++    `SELECT o.id, o.customer_id AS "customerId", o.total_cents AS "totalCents",
++            o.discount_cents AS "discountCents", o.status,
++            COUNT(oi.id)::int AS "itemCount", o.created_at AS "createdAt"
++     FROM orders o
++     LEFT JOIN order_items oi ON oi.order_id = o.id
++     WHERE o.customer_id = $1
++     GROUP BY o.id
++     ORDER BY o.created_at DESC
++     LIMIT $2 OFFSET $3`,
++    [customerId, limit, offset],
++  );
++  const countResult = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM orders WHERE customer_id = $1',
++    [customerId],
++  );
++  return {
++    data: rows,
++    meta: { page, limit, total: parseInt(countResult.rows[0].count, 10) },
++  };
++}
++
++export async function getOrderById(orderId: string, customerId?: string): Promise<OrderSummary> {
++  const params: unknown[] = [orderId];
++  const customerClause = customerId ? `AND o.customer_id = $2` : '';
++  if (customerId) params.push(customerId);
++  const { rows } = await query<OrderSummary>(
++    `SELECT o.id, o.customer_id AS "customerId", o.total_cents AS "totalCents",
++            o.discount_cents AS "discountCents", o.status,
++            COUNT(oi.id)::int AS "itemCount", o.created_at AS "createdAt"
++     FROM orders o
++     LEFT JOIN order_items oi ON oi.order_id = o.id
++     WHERE o.id = $1 ${customerClause}
++     GROUP BY o.id`,
++    params,
++  );
++  if (rows.length === 0) {
++    throw new AppError('ORDER_NOT_FOUND', 404, `Order ${orderId} not found`);
++  }
++  return rows[0];
++}
++
++export async function cancelOrder(orderId: string, customerId: string): Promise<OrderSummary> {
++  const order = await getOrderById(orderId, customerId);
++  if (order.status !== 'pending') {
++    throw new AppError('ORDER_CANNOT_CANCEL', 400, 'Only pending orders can be cancelled');
++  }
++  const { rows } = await query<OrderSummary>(
++    `UPDATE orders SET status = 'cancelled', updated_at = NOW()
++     WHERE id = $1
++     RETURNING id, customer_id AS "customerId", total_cents AS "totalCents",
++             discount_cents AS "discountCents", status, created_at AS "createdAt"`,
++    [orderId],
++  );
++  logger.info({ orderId, customerId }, 'Order cancelled');
++  return { ...rows[0], itemCount: order.itemCount };
++}
++
++export async function adminUpdateOrderStatus(orderId: string, newStatus: string): Promise<OrderSummary> {
++  const validStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
++  if (!validStatuses.includes(newStatus)) {
++    throw new AppError('INVALID_STATUS', 400, `Status must be one of: ${validStatuses.join(', ')}`);
++  }
++  const { rows } = await query<OrderSummary>(
++    `UPDATE orders SET status = $1, updated_at = NOW()
++     WHERE id = $2
++     RETURNING id, customer_id AS "customerId", total_cents AS "totalCents",
++             discount_cents AS "discountCents", status, created_at AS "createdAt"`,
++    [newStatus, orderId],
++  );
++  if (rows.length === 0) {
++    throw new AppError('ORDER_NOT_FOUND', 404, `Order ${orderId} not found`);
++  }
++  logger.info({ orderId, newStatus }, 'Order status updated by admin');
++  // Re-fetch with item count
++  return getOrderById(orderId);
++}
++
+
+diff --git a/src/inventoryService.ts b/src/inventoryService.ts
+new file mode 100644
+index 0000000..cc56789
+--- /dev/null
++++ b/src/inventoryService.ts
+@@ -0,0 +1,174 @@
++import { z } from 'zod';
++import { query, getClient } from './db';
++import { AppError } from './errors';
++import { logger } from './logger';
++
++export interface StockAdjustment {
++  id: string;
++  productId: string;
++  delta: number;
++  reason: string;
++  createdBy: string;
++  createdAt: Date;
++}
++
++export const adjustStockSchema = z.object({
++  productId: z.string().uuid(),
++  delta: z.number().int(),
++  reason: z.string().min(1).max(500),
++}).strict();
++
++export type AdjustStockInput = z.infer<typeof adjustStockSchema>;
++
++export async function getStockLevel(productId: string): Promise<number> {
++  const { rows } = await query<{ stock_quantity: number }>(
++    'SELECT stock_quantity FROM products WHERE id = $1',
++    [productId],
++  );
++  if (rows.length === 0) {
++    throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${productId} not found`);
++  }
++  return rows[0].stock_quantity;
++}
++
++export async function adjustStock(input: AdjustStockInput, adminId: string): Promise<StockAdjustment> {
++  const client = await getClient();
++  try {
++    await client.query('BEGIN');
++
++    const { rows: productRows } = await client.query<{ stock_quantity: number }>(
++      'SELECT stock_quantity FROM products WHERE id = $1 FOR UPDATE',
++      [input.productId],
++    );
++    if (productRows.length === 0) {
++      throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${input.productId} not found`);
++    }
++
++    const currentStock = productRows[0].stock_quantity;
++    const newStock = currentStock + input.delta;
++    if (newStock < 0) {
++      throw new AppError('INSUFFICIENT_STOCK', 400, `Cannot reduce stock below 0 (current: ${currentStock})`);
++    }
++
++    await client.query(
++      'UPDATE products SET stock_quantity = $1, updated_at = NOW() WHERE id = $2',
++      [newStock, input.productId],
++    );
++
++    const { rows } = await client.query<StockAdjustment>(
++      `INSERT INTO stock_adjustments (product_id, delta, reason, created_by)
++       VALUES ($1, $2, $3, $4)
++       RETURNING id, product_id AS "productId", delta, reason, created_by AS "createdBy", created_at AS "createdAt"`,
++      [input.productId, input.delta, input.reason, adminId],
++    );
++
++    await client.query('COMMIT');
++    logger.info({ productId: input.productId, delta: input.delta, adminId }, 'Stock adjusted');
++    return rows[0];
++  } catch (err) {
++    await client.query('ROLLBACK');
++    throw err;
++  } finally {
++    client.release();
++  }
++}
++
++export async function getLowStockProducts(threshold = 5): Promise<Array<{ id: string; name: string; sku: string; stockQuantity: number }>> {
++  const { rows } = await query<{ id: string; name: string; sku: string; stockQuantity: number }>(
++    `SELECT id, name, sku, stock_quantity AS "stockQuantity"
++     FROM products
++     WHERE stock_quantity <= $1
++     ORDER BY stock_quantity ASC`,
++    [threshold],
++  );
++  return rows;
++}
++
++export async function getStockHistory(productId: string, page = 1, limit = 50): Promise<{ data: StockAdjustment[]; meta: object }> {
++  const offset = (page - 1) * limit;
++  const { rows } = await query<StockAdjustment>(
++    `SELECT id, product_id AS "productId", delta, reason, created_by AS "createdBy", created_at AS "createdAt"
++     FROM stock_adjustments
++     WHERE product_id = $1
++     ORDER BY created_at DESC
++     LIMIT $2 OFFSET $3`,
++    [productId, limit, offset],
++  );
++  const countResult = await query<{ count: string }>(
++    'SELECT COUNT(*) AS count FROM stock_adjustments WHERE product_id = $1',
++    [productId],
++  );
++  return {
++    data: rows,
++    meta: { page, limit, total: parseInt(countResult.rows[0].count, 10) },
++  };
++}
++
++export async function reserveStock(productId: string, quantity: number): Promise<void> {
++  const client = await getClient();
++  try {
++    await client.query('BEGIN');
++    const { rows } = await client.query<{ stock_quantity: number }>(
++      'SELECT stock_quantity FROM products WHERE id = $1 FOR UPDATE',
++      [productId],
++    );
++    if (rows.length === 0) {
++      throw new AppError('PRODUCT_NOT_FOUND', 404, `Product ${productId} not found`);
++    }
++    if (rows[0].stock_quantity < quantity) {
++      throw new AppError('INSUFFICIENT_STOCK', 400, `Insufficient stock for product ${productId}`);
++    }
++    await client.query(
++      'UPDATE products SET stock_quantity = stock_quantity - $1, updated_at = NOW() WHERE id = $2',
++      [quantity, productId],
++    );
++    await client.query('COMMIT');
++  } catch (err) {
++    await client.query('ROLLBACK');
++    throw err;
++  } finally {
++    client.release();
++  }
++}
++
++export async function releaseStock(productId: string, quantity: number): Promise<void> {
++  await query(
++    'UPDATE products SET stock_quantity = stock_quantity + $1, updated_at = NOW() WHERE id = $2',
++    [quantity, productId],
++  );
++  logger.info({ productId, quantity }, 'Stock released');
++}
++
++// ============================================================
++// Additional inventory report helpers
++// ============================================================
++
++export async function getInventoryValueCents(): Promise<number> {
++  const { rows } = await query<{ total: string }>(
++    'SELECT COALESCE(SUM(price_cents * stock_quantity), 0) AS total FROM products',
++    [],
++  );
++  return parseInt(rows[0].total, 10);
++}
++
++export async function getOutOfStockProducts(): Promise<Array<{ id: string; name: string; sku: string }>> {
++  const { rows } = await query<{ id: string; name: string; sku: string }>(
++    `SELECT id, name, sku FROM products WHERE stock_quantity = 0 ORDER BY name`,
++    [],
++  );
++  return rows;
++}
++
++export async function getCategoryStockSummary(): Promise<Array<{ category: string; totalUnits: number; productCount: number }>> {
++  const { rows } = await query<{ category: string; totalUnits: number; productCount: number }>(
++    `SELECT category,
++            SUM(stock_quantity)::int AS "totalUnits",
++            COUNT(*)::int AS "productCount"
++     FROM products
++     GROUP BY category
++     ORDER BY category`,
++    [],
++  );
++  return rows;
++}
++
+
+diff --git a/src/routes/inventory.ts b/src/routes/inventory.ts
+new file mode 100644
+index 0000000..dd78901
+--- /dev/null
++++ b/src/routes/inventory.ts
+@@ -0,0 +1,81 @@
++import { Router, Response, NextFunction } from 'express';
++import { requireAuth, requireAdmin, AuthenticatedRequest } from '../authMiddleware';
++import {
++  getStockLevel,
++  adjustStock,
++  adjustStockSchema,
++  getLowStockProducts,
++  getStockHistory,
++  getInventoryValueCents,
++  getOutOfStockProducts,
++  getCategoryStockSummary,
++} from '../inventoryService';
++import { AppError } from '../errors';
++
++const router = Router();
++
++/** GET /inventory/:productId/stock — get current stock level */
++router.get('/:productId/stock', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const level = await getStockLevel(req.params.productId);
++    res.json({ data: { stockQuantity: level } });
++  } catch (err) { next(err); }
++});
++
++/** POST /inventory/:productId/adjust — adjust stock up or down */
++router.post('/:productId/adjust', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const parsed = adjustStockSchema.safeParse({ ...req.body, productId: req.params.productId });
++    if (!parsed.success) {
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid stock adjustment data'));
++      return;
++    }
++    const adjustment = await adjustStock(parsed.data, req.user!.id);
++    res.status(201).json({ data: adjustment });
++  } catch (err) { next(err); }
++});
++
++/** GET /inventory/:productId/history — stock adjustment history */
++router.get('/:productId/history', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const page = parseInt(String(req.query.page ?? '1'), 10);
++    const limit = parseInt(String(req.query.limit ?? '50'), 10);
++    const result = await getStockHistory(req.params.productId, page, limit);
++    res.json(result);
++  } catch (err) { next(err); }
++});
++
++/** GET /inventory/low-stock — products with stock at or below threshold */
++router.get('/low-stock', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const threshold = parseInt(String(req.query.threshold ?? '5'), 10);
++    const products = await getLowStockProducts(threshold);
++    res.json({ data: products });
++  } catch (err) { next(err); }
++});
++
++/** GET /inventory/out-of-stock — products with zero stock */
++router.get('/out-of-stock', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const products = await getOutOfStockProducts();
++    res.json({ data: products });
++  } catch (err) { next(err); }
++});
++
++/** GET /inventory/value — total inventory value in cents */
++router.get('/value', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const valueCents = await getInventoryValueCents();
++    res.json({ data: { valueCents, valueDollars: (valueCents / 100).toFixed(2) } });
++  } catch (err) { next(err); }
++});
++
++/** GET /inventory/category-summary — stock counts by tire category */
++router.get('/category-summary', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const summary = await getCategoryStockSummary();
++    res.json({ data: summary });
++  } catch (err) { next(err); }
++});
++
++export default router;
+
+diff --git a/src/routes/cart.ts b/src/routes/cart.ts
+new file mode 100644
+index 0000000..ee90123
+--- /dev/null
++++ b/src/routes/cart.ts
+@@ -0,0 +1,80 @@
++import { Router, Response, NextFunction } from 'express';
++import { requireAuth, AuthenticatedRequest } from '../authMiddleware';
++import { getCart, addToCart, updateCartItem, removeFromCart, clearCart, cartTotal } from '../productService';
++import { z } from 'zod';
++import { AppError } from '../errors';
++
++const router = Router();
++
++const addToCartSchema = z.object({
++  productId: z.string().uuid(),
++  quantity: z.number().int().min(1).max(50),
++}).strict();
++
++const updateCartItemSchema = z.object({
++  quantity: z.number().int().min(0).max(50),
++}).strict();
++
++/** GET /cart — retrieve the authenticated customer's cart */
++router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const items = await getCart(req.user!.id);
++    const total = await cartTotal(req.user!.id);
++    res.json({ data: items, meta: { totalCents: total } });
++  } catch (err) { next(err); }
++});
++
++/** POST /cart/items — add an item to the cart */
++router.post('/items', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const parsed = addToCartSchema.safeParse(req.body);
++    if (!parsed.success) {
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid cart item data'));
++      return;
++    }
++    const item = await addToCart(req.user!.id, parsed.data.productId, parsed.data.quantity);
++    res.status(201).json({ data: item });
++  } catch (err) { next(err); }
++});
++
++/** PATCH /cart/items/:itemId — update quantity of a cart item */
++router.patch('/items/:itemId', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const parsed = updateCartItemSchema.safeParse(req.body);
++    if (!parsed.success) {
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid quantity'));
++      return;
++    }
++    const item = await updateCartItem(req.user!.id, req.params.itemId, parsed.data.quantity);
++    res.json({ data: item });
++  } catch (err) { next(err); }
++});
++
++/** DELETE /cart/items/:itemId — remove a specific item from the cart */
++router.delete('/items/:itemId', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    const item = await removeFromCart(req.user!.id, req.params.itemId);
++    res.json({ data: item });
++  } catch (err) { next(err); }
++});
++
++/** DELETE /cart — clear the entire cart */
++router.delete('/', requireAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
++  try {
++    await clearCart(req.user!.id);
++    res.status(204).send();
++  } catch (err) { next(err); }
++});
++
++export default router;
+
+diff --git a/src/authService.ts b/src/authService.ts
+new file mode 100644
+index 0000000..ff01234
+--- /dev/null
++++ b/src/authService.ts
+@@ -0,0 +1,120 @@
++import bcrypt from 'bcrypt';
++import jwt from 'jsonwebtoken';
++import { z } from 'zod';
++import { query } from './db';
++import { AppError } from './errors';
++import { logger } from './logger';
++
++const SALT_ROUNDS = 12;
++const JWT_SECRET = process.env.JWT_SECRET!;
++const ACCESS_TOKEN_TTL = '15m';
++const REFRESH_TOKEN_TTL = '7d';
++
++export const registerSchema = z.object({
++  email: z.string().email().toLowerCase(),
++  password: z.string().min(8).max(128),
++  firstName: z.string().min(1).max(100),
++  lastName: z.string().min(1).max(100),
++}).strict();
++
++export const loginSchema = z.object({
++  email: z.string().email().toLowerCase(),
++  password: z.string().min(1),
++}).strict();
++
++export type RegisterInput = z.infer<typeof registerSchema>;
++export type LoginInput = z.infer<typeof loginSchema>;
++
++export interface AuthTokens {
++  accessToken: string;
++  refreshToken: string;
++  expiresIn: number;
++}
++
++export interface UserRecord {
++  id: string;
++  email: string;
++  firstName: string;
++  lastName: string;
++  role: 'customer' | 'admin';
++  createdAt: Date;
++}
++
++export async function registerUser(input: RegisterInput): Promise<UserRecord> {
++  const { rows: existing } = await query<{ id: string }>(
++    'SELECT id FROM users WHERE email = $1',
++    [input.email],
++  );
++  if (existing.length > 0) {
++    throw new AppError('EMAIL_TAKEN', 409, 'An account with that email already exists');
++  }
++
++  const passwordHash = await bcrypt.hash(input.password, SALT_ROUNDS);
++
++  const { rows } = await query<UserRecord>(
++    `INSERT INTO users (email, password_hash, first_name, last_name, role)
++     VALUES ($1, $2, $3, $4, 'customer')
++     RETURNING id, email, first_name AS "firstName", last_name AS "lastName", role, created_at AS "createdAt"`,
++    [input.email, passwordHash, input.firstName, input.lastName],
++  );
++
++  logger.info({ userId: rows[0].id }, 'User registered');
++  return rows[0];
++}
++
++export async function loginUser(input: LoginInput): Promise<AuthTokens> {
++  const { rows } = await query<{ id: string; email: string; password_hash: string; role: string }>(
++    'SELECT id, email, password_hash, role FROM users WHERE email = $1',
++    [input.email],
++  );
++
++  // Constant-time comparison even when user not found (run bcrypt.compare on a dummy hash)
++  const dummyHash = '$2b$12$invalidhashfortimingattackprevention000000000000000000';
++  const storedHash = rows.length > 0 ? rows[0].password_hash : dummyHash;
++  const passwordMatch = await bcrypt.compare(input.password, storedHash);
++
++  if (rows.length === 0 || !passwordMatch) {
++    throw new AppError('INVALID_CREDENTIALS', 401, 'Invalid email or password');
++  }
++
++  const user = rows[0];
++  const tokens = issueTokens(user.id, user.email, user.role as 'customer' | 'admin');
++  logger.info({ userId: user.id }, 'User logged in');
++  return tokens;
++}
++
++export async function refreshTokens(refreshToken: string): Promise<AuthTokens> {
++  let payload: { sub: string; email: string; role: 'customer' | 'admin'; exp: number };
++  try {
++    payload = jwt.verify(refreshToken, JWT_SECRET) as typeof payload;
++  } catch {
++    throw new AppError('UNAUTHORIZED', 401, 'Unauthorized');
++  }
++
++  const nowSeconds = Math.floor(Date.now() / 1000);
++  if (payload.exp <= nowSeconds) {
++    throw new AppError('UNAUTHORIZED', 401, 'Unauthorized');
++  }
++
++  // Verify the user still exists and is not disabled
++  const { rows } = await query<{ id: string; role: string }>(
++    'SELECT id, role FROM users WHERE id = $1 AND disabled = false',
++    [payload.sub],
++  );
++  if (rows.length === 0) {
++    throw new AppError('UNAUTHORIZED', 401, 'Unauthorized');
++  }
++
++  return issueTokens(rows[0].id, payload.email, rows[0].role as 'customer' | 'admin');
++}
++
++function issueTokens(userId: string, email: string, role: 'customer' | 'admin'): AuthTokens {
++  const accessToken = jwt.sign(
++    { sub: userId, email, role },
++    JWT_SECRET,
++    { expiresIn: ACCESS_TOKEN_TTL, algorithm: 'HS256' },
++  );
++  const refreshToken = jwt.sign(
++    { sub: userId, email, role },
++    JWT_SECRET,
++    { expiresIn: REFRESH_TOKEN_TTL, algorithm: 'HS256' },
++  );
++  return { accessToken, refreshToken, expiresIn: 15 * 60 };
++}
+
+diff --git a/src/routes/auth.ts b/src/routes/auth.ts
+new file mode 100644
+index 0000000..gg23456
+--- /dev/null
++++ b/src/routes/auth.ts
+@@ -0,0 +1,60 @@
++import { Router, Request, Response, NextFunction } from 'express';
++import rateLimit from 'express-rate-limit';
++import { registerUser, loginUser, refreshTokens, registerSchema, loginSchema } from '../authService';
++import { AppError } from '../errors';
++
++const router = Router();
++
++const authLimiter = rateLimit({
++  windowMs: 15 * 60 * 1000,
++  max: 10,
++  standardHeaders: true,
++  legacyHeaders: false,
++  handler: (_req, res) => {
++    res.status(429).json({
++      error: {
++        code: 'RATE_LIMITED',
++        message: 'Too many requests, please try again later',
++      },
++    });
++  },
++});
++
++/** POST /auth/register */
++router.post('/register', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const parsed = registerSchema.safeParse(req.body);
++    if (!parsed.success) {
++      const details = parsed.error.errors.map((e) => ({ field: e.path.join('.'), issue: e.message }));
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid registration data'));
++      return;
++    }
++    const user = await registerUser(parsed.data);
++    res.status(201).json({ data: { id: user.id, email: user.email, role: user.role } });
++  } catch (err) { next(err); }
++});
++
++/** POST /auth/login */
++router.post('/login', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const parsed = loginSchema.safeParse(req.body);
++    if (!parsed.success) {
++      next(new AppError('VALIDATION_ERROR', 400, 'Invalid login data'));
++      return;
++    }
++    const tokens = await loginUser(parsed.data);
++    res.json({ data: tokens });
++  } catch (err) { next(err); }
++});
++
++/** POST /auth/refresh */
++router.post('/refresh', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
++  try {
++    const { refreshToken } = req.body;
++    if (typeof refreshToken !== 'string') {
++      next(new AppError('VALIDATION_ERROR', 400, 'refreshToken is required'));
++      return;
++    }
++    const tokens = await refreshTokens(refreshToken);
++    res.json({ data: tokens });
++  } catch (err) { next(err); }
++});
++
++export default router;
+
+diff --git a/src/app.ts b/src/app.ts
+new file mode 100644
+index 0000000..hh34567
+--- /dev/null
++++ b/src/app.ts
+@@ -0,0 +1,60 @@
++import express, { Request, Response, NextFunction } from 'express';
++import helmet from 'helmet';
++import rateLimit from 'express-rate-limit';
++import { logger } from './logger';
++import { AppError } from './errors';
++import productRouter from './routes/products';
++import orderRouter from './routes/orders';
++import cartRouter from './routes/cart';
++import authRouter from './routes/auth';
++import inventoryRouter from './routes/inventory';
++
++export const app = express();
++
++app.use(helmet());
++app.use(express.json({ limit: '1mb' }));
++
++const globalLimiter = rateLimit({
++  windowMs: 15 * 60 * 1000,
++  max: 200,
++  standardHeaders: true,
++  legacyHeaders: false,
++});
++app.use(globalLimiter);
++
++// Request logging
++app.use((req: Request, _res: Response, next: NextFunction) => {
++  logger.info({ method: req.method, path: req.path }, 'incoming request');
++  next();
++});
++
++// Routes
++app.use('/products', productRouter);
++app.use('/orders', orderRouter);
++app.use('/cart', cartRouter);
++app.use('/auth', authRouter);
++app.use('/inventory', inventoryRouter);
++
++// 404 handler
++app.use((_req: Request, _res: Response, next: NextFunction) => {
++  next(new AppError('NOT_FOUND', 404, 'The requested resource was not found'));
++});
++
++// Centralized error handler
++app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
++  if (err instanceof AppError) {
++    logger.warn({ err, path: req.path, method: req.method }, 'application error');
++    res.status(err.statusCode).json({
++      error: { code: err.code, message: err.message },
++    });
++  } else {
++    logger.error({ err, path: req.path, method: req.method }, 'unexpected error');
++    res.status(500).json({
++      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
++    });
++  }
++});
++
++export default app;

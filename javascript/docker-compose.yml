@@ -1,0 +1,28 @@
+# Docker Compose entrypoints. Build once, then:
+#   docker compose run --rm app   data/sample-diffs/feature.diff data/sample-tickets/feature.md
+#   docker compose run --rm eval
+#
+# All configuration comes from .env (copy example.env -> .env first).
+
+services:
+  # Primary CLI: generate a PR description + review checklist + risk flags.
+  app:
+    build:
+      context: .
+      target: runtime
+    image: pr-review-assistant:latest
+    env_file: .env
+    volumes:
+      # Generated evidence (traces, logs) is written back to the host.
+      - ./docs/evidence:/app/docs/evidence
+
+  # Evaluation harness: runs the golden + failure cases and the live failover demo.
+  eval:
+    build:
+      context: .
+      target: runtime
+    image: pr-review-assistant:latest
+    env_file: .env
+    entrypoint: ["npm", "run", "eval", "--silent"]
+    volumes:
+      - ./docs/evidence:/app/docs/evidence

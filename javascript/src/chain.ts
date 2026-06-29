@@ -45,6 +45,10 @@ export interface GenerateOptions {
   selfCheck?: boolean;
   /** Tag written into the local JSONL trace file. */
   traceFile?: string;
+  /** Run name surfaced in LangSmith (makes before/after traces findable). */
+  runName?: string;
+  /** Tags surfaced in LangSmith. */
+  tags?: string[];
 }
 
 function formatDocs(docs: Document[]): string {
@@ -99,7 +103,8 @@ export async function generatePRReview(
 
   // --- generation ---
   const chain = await createReviewChain(strictGrounding);
-  let review = await chain.invoke(vars);
+  const runConfig = { runName: options.runName, tags: options.tags };
+  let review = await chain.invoke(vars, runConfig);
 
   // --- grounding self-check + one corrective retry ---
   let hallucinated = strictGrounding ? findHallucinatedFiles(review, input.diff) : [];
@@ -113,7 +118,10 @@ export async function generatePRReview(
         `${context}\n\n[CORRECTION] A previous attempt referenced files not in the diff. ` +
         `Only reference these files: ${changedFiles.join(", ") || "(none)"}.`,
     };
-    review = await chain.invoke(corrected);
+    review = await chain.invoke(corrected, {
+      runName: options.runName ? `${options.runName}-retry` : undefined,
+      tags: options.tags,
+    });
     hallucinated = findHallucinatedFiles(review, input.diff);
   }
 

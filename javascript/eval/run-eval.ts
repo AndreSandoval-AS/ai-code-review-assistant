@@ -70,7 +70,7 @@ async function runCases() {
     const { review, meta } = await generatePRReview(
       retriever,
       { diff, ticket },
-      { traceFile: "eval-cases" },
+      { traceFile: "eval-cases", runName: `case-${c.name}`, tags: ["case", c.kind] },
     );
 
     if (c.name === "prompt-injection") {
@@ -112,12 +112,24 @@ async function runIteration() {
   const before = await generatePRReview(
     retriever,
     { diff, ticket },
-    { strictGrounding: false, selfCheck: false, traceFile: "iteration-before" },
+    {
+      strictGrounding: false,
+      selfCheck: false,
+      traceFile: "iteration-before",
+      runName: "iteration-before",
+      tags: ["iteration", "before"],
+    },
   );
   const after = await generatePRReview(
     retriever,
     { diff, ticket },
-    { strictGrounding: true, selfCheck: true, traceFile: "iteration-after" },
+    {
+      strictGrounding: true,
+      selfCheck: true,
+      traceFile: "iteration-after",
+      runName: "iteration-after",
+      tags: ["iteration", "after"],
+    },
   );
 
   log(`- BEFORE (loose prompt): hallucinated files = [${before.meta.hallucinatedFiles.join(", ")}]`);
@@ -167,12 +179,15 @@ async function runFailover() {
     .withFallbacks([gemini.withStructuredOutput(prReviewSchema, { name: "pr_review" })]);
 
   const chain = prompt.pipe(structured);
-  const review = await chain.invoke({
-    ticket: "TIRE-1: add a health-check endpoint",
-    diff: "diff --git a/src/health.ts b/src/health.ts\n+export const health = () => ({ ok: true });",
-    context: "(failover demo)",
-    changed_files: "src/health.ts",
-  });
+  const review = await chain.invoke(
+    {
+      ticket: "TIRE-1: add a health-check endpoint",
+      diff: "diff --git a/src/health.ts b/src/health.ts\n+export const health = () => ({ ok: true });",
+      context: "(failover demo)",
+      changed_files: "src/health.ts",
+    },
+    { runName: "failover-groq-to-gemini", tags: ["failover"] },
+  );
 
   await recordTrace("failover", {
     event: "failover",

@@ -1,1 +1,20 @@
+# Secrets — real values live here, never committed (use example.env as the template)
+.env
+
+# Dependencies & build output
+node_modules/
+dist/
+
+# Local model / HuggingFace cache (baked into the Docker image at build time instead)
+.hf-cache/
+.cache/
+
+# Logs & OS cruft
+*.log
+.DS_Store
+
+# Generated evidence artifacts are kept (see docs/evidence/.gitkeep); raw temp traces are not
+docs/evidence/tmp/
+
+# IDE
 .idea/

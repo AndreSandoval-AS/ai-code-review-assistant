@@ -35,7 +35,6 @@ diff + ticket
 ## Setup
 
 ```bash
-cd javascript
 cp example.env .env
 # edit .env and paste your GROQ_API_KEY and GOOGLE_API_KEY
 docker compose build      # builds the image and bakes the embedding model in

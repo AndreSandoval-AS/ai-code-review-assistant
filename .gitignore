@@ -18,3 +18,6 @@ docs/evidence/tmp/
 
 # IDE
 .idea/
+
+# Transient CLI run trace (not curated evidence)
+docs/evidence/cli-runs.jsonl

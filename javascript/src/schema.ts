@@ -35,10 +35,12 @@ export const prReviewSchema = z.object({
       z.object({
         severity: z.enum(["low", "medium", "high"]),
         description: z.string().describe("The risk and the file/area it concerns."),
+        // Required string (empty when none) rather than optional/nullable: Gemini's
+        // responseSchema rejects type-array unions like ["string","null"], so this
+        // keeps the schema portable across Groq and Gemini.
         relatedStandard: z
           .string()
-          .optional()
-          .describe("Name of the coding standard this risk relates to, if any."),
+          .describe("Name of the related coding standard, or an empty string if none."),
       }),
     )
     .describe("Risks introduced by this change. Empty array if none found."),

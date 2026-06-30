@@ -75,7 +75,9 @@ export async function buildModel(
   opts: { temperature?: number; maxRetries?: number } = {},
 ): Promise<BaseChatModel> {
   const temperature = opts.temperature ?? 0.2;
-  const maxRetries = opts.maxRetries ?? 2;
+  // Higher retry count so transient free-tier 429s (which carry a retry-after)
+  // self-heal rather than aborting a run.
+  const maxRetries = opts.maxRetries ?? 4;
 
   switch (provider) {
     case "groq":
@@ -167,8 +169,16 @@ export async function createStructuredModel<T extends Record<string, unknown>>(
   name = "pr_review",
 ): Promise<Runnable<unknown, T>> {
   const models = await Promise.all(providerChain().map((p) => buildModel(p)));
+  // Use native JSON-schema structured output (response_format) rather than the
+  // default tool-calling path: gpt-oss returns the JSON as message content, not
+  // as a tool call, so the tool-calling parser fails. jsonSchema sends the
+  // schema to the model AND returns parseable, schema-validated content.
   const structured = models.map(
-    (m) => m.withStructuredOutput(schema as any, { name }) as Runnable<unknown, T>,
+    (m) =>
+      m.withStructuredOutput(schema as any, {
+        name,
+        method: "jsonSchema",
+      }) as Runnable<unknown, T>,
   );
   const [primary, ...rest] = structured;
   return rest.length ? primary.withFallbacks(rest) : primary;

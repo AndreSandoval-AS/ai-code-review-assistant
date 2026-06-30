@@ -107,7 +107,9 @@ export async function generatePRReview(
   let review = await chain.invoke(vars, runConfig);
 
   // --- grounding self-check + one corrective retry ---
-  let hallucinated = strictGrounding ? findHallucinatedFiles(review, input.diff) : [];
+  // Always MEASURE out-of-diff file references (so before/after comparisons are
+  // valid); only the corrective retry is gated on strict + self-check.
+  let hallucinated = findHallucinatedFiles(review, input.diff);
   let retried = false;
   if (selfCheck && strictGrounding && hallucinated.length > 0) {
     logger.warn(`grounding self-check: retrying (hallucinated: ${hallucinated.join(", ")})`);

@@ -32,6 +32,17 @@ Grounding rules (critical):
 - If the retrieved standards do not cover something, say so in groundingNote rather than guessing.
 - If the diff is empty or truncated, state that plainly in groundingNote.`;
 
+// The "before" baseline: a realistic naive first-draft prompt. Asking the model
+// to be thorough about "related files elsewhere in the codebase" reliably makes
+// it reference files that are NOT in the diff — the hallucination the grounding
+// rules + self-check later fix. This is what the iteration evidence captures.
+const NAIVE_CLAUSE = `
+Be thorough and proactive. Beyond the changed files, infer the wider codebase and
+explicitly name the related source files (with paths and .ts extensions, e.g.
+src/controllers/productController.ts, src/db.ts, tests, route files) that a
+reviewer should also open and update so the feature works end to end. Put these
+concrete file paths in the checklist items and risk descriptions.`;
+
 const HUMAN = `Review the following change.
 
 <untrusted_ticket>
@@ -54,7 +65,9 @@ export interface PromptOptions {
 }
 
 export function buildPrompt(options: PromptOptions): ChatPromptTemplate {
-  const system = options.strictGrounding ? BASE_SYSTEM + "\n" + GROUNDING_CLAUSE : BASE_SYSTEM;
+  const system = options.strictGrounding
+    ? BASE_SYSTEM + "\n" + GROUNDING_CLAUSE
+    : BASE_SYSTEM + "\n" + NAIVE_CLAUSE;
   return ChatPromptTemplate.fromMessages([
     ["system", system],
     ["human", HUMAN],

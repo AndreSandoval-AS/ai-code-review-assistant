@@ -36,7 +36,10 @@ export function findHallucinatedFiles(review: PRReview, diff: string): string[] 
     ...review.riskFlags.map((r) => r.description),
   ].join(" ");
 
-  const fileTokens = haystack.match(/[\w./-]+\.(ts|js|tsx|jsx|sql|json|md)\b/gi) || [];
+  // Only consider source-code files. Markdown/JSON tokens are excluded because
+  // the model legitimately cites coding-standard docs (e.g. `api-design.md`) —
+  // that is correct grounding, not a hallucination.
+  const fileTokens = haystack.match(/[\w./-]+\.(ts|tsx|js|jsx)\b/gi) || [];
   const hallucinated = new Set<string>();
   for (const token of fileTokens) {
     const base = token.toLowerCase().split("/").pop() || token.toLowerCase();

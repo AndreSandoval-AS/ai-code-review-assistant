@@ -26,3 +26,15 @@ services:
     entrypoint: ["npm", "run", "eval", "--silent"]
     volumes:
       - ./docs/evidence:/app/docs/evidence
+
+  # Documentation toolchain: render the diagram and the TDD PDF. Example:
+  #   docker compose run --rm docs mmdc -i architecture.mmd -o architecture.png -p puppeteer-config.json -b white -w 1400
+  #   docker compose run --rm docs md-to-pdf --launch-options '{"args":["--no-sandbox"]}' TDD.md
+  docs:
+    build:
+      context: .
+      dockerfile: Dockerfile.docs
+    image: pr-review-docs:latest
+    working_dir: /docs
+    volumes:
+      - ./docs:/docs

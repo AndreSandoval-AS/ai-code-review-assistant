@@ -1,0 +1,54 @@
+flowchart TB
+    subgraph Input["User input"]
+        DIFF["git diff"]
+        TICKET["Jira ticket"]
+    end
+
+    subgraph Guard["Input hardening (guardrails + sanitize)"]
+        VALIDATE["validate: reject empty"]
+        CAP["cap diff to token budget"]
+        SANITIZE["sanitize: flag injection,<br/>extract changed files"]
+    end
+
+    subgraph Retrieval["Retrieval (Parent Document Retriever)"]
+        EMBED["local embeddings<br/>Transformers.js (all-MiniLM-L6-v2)"]
+        VS["MemoryVectorStore<br/>(child chunks)"]
+        DS["InMemoryStore<br/>(parent docs)"]
+        KB[("Knowledge base:<br/>coding standards + code")]
+    end
+
+    subgraph Orchestration["LCEL chain"]
+        PROMPT["ChatPromptTemplate<br/>(anti-injection framing)"]
+        MODEL["ChatGroq gpt-oss-120b"]
+        FALLBACK["ChatGoogleGenerativeAI<br/>(Gemini)"]
+        PARSER["withStructuredOutput<br/>(Zod schema)"]
+    end
+
+    subgraph Post["Post-processing"]
+        SELFCHECK["grounding self-check<br/>+ 1 corrective retry"]
+        OUT["PR description +<br/>checklist + risk flags"]
+    end
+
+    OBS["Observability:<br/>LangSmith + local JSONL"]
+
+    DIFF --> VALIDATE
+    TICKET --> VALIDATE
+    VALIDATE --> CAP --> SANITIZE
+    SANITIZE -->|query| EMBED
+    KB --> VS
+    KB --> DS
+    EMBED --> VS
+    VS -->|child match| DS
+    DS -->|"top-K parents (or 0-results fallback)"| PROMPT
+    SANITIZE -->|diff + ticket as data| PROMPT
+    PROMPT --> MODEL
+    MODEL -.->|on error| FALLBACK
+    MODEL --> PARSER
+    FALLBACK --> PARSER
+    PARSER --> SELFCHECK
+    SELFCHECK -->|references invalid| PROMPT
+    SELFCHECK --> OUT
+
+    MODEL -.-> OBS
+    FALLBACK -.-> OBS
+    PARSER -.-> OBS

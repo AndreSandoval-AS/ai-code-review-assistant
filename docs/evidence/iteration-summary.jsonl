@@ -1,1 +1,1 @@
-{"ts":"2026-06-30T05:57:13.582Z","event":"iteration","beforeHallucinated":["src/app.ts","src/server.ts","tests/orderService.test.ts"],"afterHallucinated":[],"afterRetried":false}
+{"ts":"2026-06-30T06:48:53.433Z","event":"iteration","beforeHallucinated":["src/db/migrations/XXXX_add_discount_to_orders.ts","src/app.ts","src/middleware/errorHandler.ts","tests/unit/orderService.test.ts","tests/integration/orders.test.ts"],"afterHallucinated":[],"afterRetried":false}

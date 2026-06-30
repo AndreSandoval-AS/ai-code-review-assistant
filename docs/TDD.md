@@ -119,23 +119,23 @@ A harness (`eval/run-eval.ts`) runs golden + failure cases, an A/B iteration com
 
 | Case | Expectation | Result |
 |---|---|---|
-| feature-discount-codes | grounded, no hallucinated files | ✅ checklist=9, hallucinated=0, sources cited |
+| feature-discount-codes | grounded, no hallucinated files | ✅ checklist=7, hallucinated=0, sources cited |
 | bugfix-auth-expiry | grounded, cites security/auth standards | ✅ checklist=6, sources=[security-guidelines, authMiddleware, …] |
 | empty-diff | rejected with `InputError`, no LLM call | ✅ rejected before any model call |
-| prompt-injection | flagged; not compromised | ✅ injection flagged, checklist still produced (6 items) |
+| prompt-injection | flagged; not compromised | ✅ injection flagged, checklist still produced (3 items) |
 | oversized-diff | truncated to budget | ✅ truncated=true |
 | zero-retrieval | ungrounded fallback + note | ✅ grounded=false, groundingNote set |
 
 ### 6.3 Iteration — fixing a hallucination (the headline result)
 The most instructive iteration was the grounding journey, captured by running the **same diff** through v1 and v2:
 
-- **v1 (BEFORE):** a naive prompt with **no retrieval grounding**. The model invented **three file paths that do not exist in the diff**: `src/app.ts`, `src/server.ts`, `tests/orderService.test.ts` — a classic RAG-less hallucination.
+- **v1 (BEFORE):** a naive prompt with **no retrieval grounding**. The model invented **five file paths that do not exist in the diff**: `src/db/migrations/XXXX_add_discount_to_orders.ts`, `src/app.ts`, `src/middleware/errorHandler.ts`, `tests/unit/orderService.test.ts`, `tests/integration/orders.test.ts` — a classic RAG-less hallucination.
 - **v2 (AFTER):** **Parent Document Retrieval** + an explicit grounding clause (*"only reference files in the diff"*) + a deterministic **grounding self-check** that re-extracts file references from the output and triggers a corrective retry if any are invented.
 
 | | Hallucinated (out-of-diff) files |
 |---|---|
-| **BEFORE** (v1, ungrounded) | `src/app.ts`, `src/server.ts`, `tests/orderService.test.ts` (3) |
-| **AFTER** (v2, grounded + self-check) | none (0) |
+| **BEFORE** (v1, ungrounded) | 5 invented paths incl. `src/app.ts`, `src/middleware/errorHandler.ts`, `tests/unit/orderService.test.ts` (**5**) |
+| **AFTER** (v2, grounded + self-check) | none (**0**) |
 
 This is the evaluation evidence: `docs/evidence/iteration-before.jsonl` vs `iteration-after.jsonl`, the `iteration-before` / `iteration-after` traces in LangSmith, and the `eval-report.md` summary.
 
@@ -163,4 +163,4 @@ The harness builds a chain whose Groq primary uses a non-existent model id (guar
 - Self-Querying and Contextual Compression are designed-for but not enabled (see §4.3).
 
 ## 9. Conclusion
-This is not "an API call." It is a modular, provider-agnostic RAG pipeline with a real advanced retrieval technique, structured and validated output, layered guardrails, live cross-provider resilience, and observability — packaged to run anywhere Docker runs, at zero marginal cost. The evaluation demonstrates accurate grounded reviews, correct edge-case handling, a measured hallucination fixed (3 → 0 invented files), and a working cross-vendor failover. The design choices are deliberate, defended, and reversible.
+This is not "an API call." It is a modular, provider-agnostic RAG pipeline with a real advanced retrieval technique, structured and validated output, layered guardrails, live cross-provider resilience, and observability — packaged to run anywhere Docker runs, at zero marginal cost. The evaluation demonstrates accurate grounded reviews, correct edge-case handling, a measured hallucination fixed (5 → 0 invented files), and a working cross-vendor failover. The design choices are deliberate, defended, and reversible.
